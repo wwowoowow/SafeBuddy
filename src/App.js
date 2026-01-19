@@ -6,7 +6,7 @@ import { fetchTransitRoute, parseOdsayPath, findSafePath, buildGraph } from "./m
 
 export default function App() {
   const [loading, error] = useKakaoLoader({
-    appkey: "38f31aed46192123ae42dc96ddef495a", 
+    appkey: process.env.REACT_APP_KAKAO_API_KEY,
     libraries: ["services", "clusterer"],
   });
 
