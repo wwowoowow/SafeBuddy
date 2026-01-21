@@ -5,12 +5,30 @@ import { Search, Shield, Map as MapIcon, Layers, ArrowRightLeft, X, Navigation, 
 import { policeData, defaultUserPrefs } from "./data/mockData";
 import { fetchTransitRoute, buildGraph, findSafePath } from "./api/mapService";
 import { useComplaints } from "./hooks/useComplaints";
+import { GU_CENTERS } from "./data/guData";
 
 export default function App() {
   const [loading, error] = useKakaoLoader({ 
     appkey: process.env.REACT_APP_KAKAO_API_KEY,
     libraries: ["services", "clusterer"],
   });
+
+  const loadSummaryData = () => {
+    fetch('/summary_by_gu.csv')
+      .then(res => res.text()) // CSV는 json()이 아니라 text()로 읽습니다.
+      .then(text => {
+        // 줄바꿈(\n)으로 쪼개서 배열로 만들기
+        const lines = text.split('\n');
+        
+        // 첫 줄(헤더) 빼고 데이터만 출력해보기
+        lines.slice(1).forEach(line => {
+          const [gu, count] = line.split(',');
+          if (gu && count) {
+            console.log(`${gu}의 도로 개수: ${count}개`);
+          }
+        });
+      });
+  };
 
   const [myPos, setMyPos] = useState({ lat: 37.498095, lng: 127.027610 });
   const [isGpsLoading, setIsGpsLoading] = useState(true);
@@ -51,19 +69,12 @@ export default function App() {
   const [compLocation, setCompLocation] = useState({ lat: myPos.lat, lng: myPos.lng, address: "📍 현재 위치" });
   const [isPickingLocation, setIsPickingLocation] = useState(false);
 
-
-  const roadSafetySegments = [
-    { id: "main_1", level: 1, safety: "high", path: [{ lat: 37.4980, lng: 127.0270 }, { lat: 37.4985, lng: 127.0280 }] },   // 큰 도로 (항상 보임)
-    { id: "sub_1", level: 2, safety: "medium", path: [{ lat: 37.4985, lng: 127.0280 }, { lat: 37.4990, lng: 127.0295 }] },  // 작은 도로 (확대 시 보임)
-    { id: "alley_1", level: 3, safety: "low", path: [{ lat: 37.4975, lng: 127.0265 }, { lat: 37.4970, lng: 127.0250 }] }    // 골목길 (최대 확대 시 보임)
-  ];
-
   // 안전도에 따른 색상 반환 함수
   const getSafetyColor = (level) => {
     if (level === "high") return "#10b981";   // 초록
     if (level === "medium") return "#f59e0b"; // 주황
     if (level === "low") return "#ef4444";    // 빨강
-    return "#94a3b8";
+    return "#3b82f6";
   };
 
     const getDynamicWeights = useCallback(() => {
@@ -80,47 +91,54 @@ export default function App() {
   }, [userPrefs]);
 
   const visibleRoads = useMemo(() => {
-    if (!bounds || geoData.length === 0 || zoom < 16) return [];
+    if (zoom < 15) return [];
+    // 데이터가 없으면 안 그림
+    if (!bounds || geoData.length === 0 ) return [];
+    
     const [swLng, swLat, neLng, neLat] = bounds;
     const weights = getDynamicWeights();
 
-    // [수정] 예시 데이터 대신 실제 geoData를 사용합니다.
     return geoData.map(feature => {
       const props = feature.properties;
       
-      // 1. 가중치 계산 (props에 들어있는 실제 컬럼명 사용)
-      const safetyScore = 
-        (props.lamp_cnt || 0) * weights.light + 
-        (props.cctv_cnt || 0) * weights.cctv - 
-        (props.dark_score || 0) * weights.light * 5 - 
-        (props.blind_score || 0) * weights.blind * 5;
+      // 1. 안전 데이터가 있는지 확인
+      const hasSafetyInfo = props.cctv_cnt !== undefined || props.lamp_cnt !== undefined;
+      
+      let dynamicLevel = "unknown"; // 기본값 (데이터 없음)
 
-      let dynamicLevel = "low";
-      if (safetyScore > 15) dynamicLevel = "high";
-      else if (safetyScore > 5) dynamicLevel = "medium";
+      // 2. 안전 데이터가 있을 때만 점수 계산
+      if (hasSafetyInfo) {
+        const safetyScore = 
+          (props.lamp_cnt || 0) * weights.light + 
+          (props.cctv_cnt || 0) * weights.cctv - 
+          (props.dark_score || 0) * weights.light * 5 - 
+          (props.blind_score || 0) * weights.blind * 5;
 
-      // 2. 좌표 변환 (GeoJSON [경도, 위도] -> 카카오 {lat, lng})
+        if (safetyScore > 15) dynamicLevel = "high";
+        else if (safetyScore > 5) dynamicLevel = "medium";
+        else dynamicLevel = "low";
+      }
+
+      // 3. 좌표 변환
       const kakaoPath = feature.geometry.coordinates.map(coord => ({
         lat: coord[1],
         lng: coord[0]
       }));
 
       return {
-        id: props.link_id,
+        id: props.link_id || Math.random(), // ID 없으면 임시로 생성
         safety: dynamicLevel,
         path: kakaoPath
       };
     }).filter(road => {
-      // 줌 레벨 및 영역 필터링 (기존 로직 유지)
-      if (zoom < 15 && road.level > 1) return false;
+      // 4. 화면 안에 있는 도로만 표시 (필터링 로직 단순화)
       return road.path.some(pt => 
         pt.lat >= swLat && pt.lat <= neLat && pt.lng >= swLng && pt.lng <= neLng
       );
     });
   }, [bounds, geoData, getDynamicWeights, zoom]);
 
-  const fastPath = [ myPos, { lat: myPos.lat + 0.0010, lng: myPos.lng + 0.002 }, { lat: 37.500628, lng: 127.036395 } ];
-
+  const [loadedGus, setLoadedGus] = useState([]);
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -134,20 +152,83 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetch('/risk_links_v1.geojson')
-      .then(res => res.json())
-      .then(data => {
-        setGeoData(data.features || []);
+  // =========================================================
+  // ✨ 스마트 데이터 로딩 시스템 (주변 구 자동 로딩)
+  // =========================================================
+  
+  // 1. 내 위치 주변의 데이터를 찾아서 로딩하는 함수
+  const loadNearbyData = useCallback(async (centerLat, centerLng) => {
+    // 1. 거리 계산
+    const nearbyGus = GU_CENTERS.map(gu => {
+      const dist = Math.sqrt(Math.pow(gu.lat - centerLat, 2) + Math.pow(gu.lng - centerLng, 2));
+      return { ...gu, dist };
+    }).sort((a, b) => a.dist - b.dist).slice(0, 3);
+
+    // 2. 로딩할 구 선별
+    const newGusToLoad = nearbyGus.filter(gu => !loadedGus.includes(gu.name));
+    if (newGusToLoad.length === 0) return;
+
+    console.log(`📡 [1단계] 로딩 시도: ${newGusToLoad.map(g => g.name).join(", ")}`);
+
+    // 3. 파일 Fetch 시도 (상세 로그 추가)
+    const promises = newGusToLoad.map(async (gu) => {
+      // 경로 확인: public/links_geojson/links_강남구.geojson
+      const path = `/links_geojson/links_${gu.name}.geojson`; 
+      console.log(`🔍 [2단계] 파일 요청: ${path}`);
+      
+      try {
+        const res = await fetch(path);
         
-        console.log("📡 데이터 로딩 완료. 그래프 생성 중...");
-        // mapService.js의 buildGraph 함수 호출 (규칙 기반으로 점수 자동 계산됨)
-        const builtGraph = buildGraph(data); 
-        setGraph(builtGraph);
-        console.log("✅ 그래프 생성 완료! (노드 개수: " + Object.keys(builtGraph).length + ")");
-      })
-      .catch(err => console.error("데이터 실패:", err));
-  }, []);
+        // 🚨 여기가 중요! 404나 에러가 나면 여기서 잡힘
+        if (!res.ok) {
+          console.error(`❌ [실패] 파일을 찾을 수 없음 (${res.status}): ${path}`);
+          return null;
+        }
+
+        const json = await res.json();
+        console.log(`📦 [성공] ${gu.name} 데이터 다운로드 완료 (${json.features?.length}개)`);
+        return { name: gu.name, features: json.features };
+
+      } catch (err) {
+        console.error(`💥 [에러] 데이터 파싱 실패 (${gu.name}):`, err);
+        return null;
+      }
+    });
+
+    const results = await Promise.all(promises);
+    
+    // 4. 유효한 데이터만 합치기
+    const validResults = results.filter(r => r !== null);
+    
+    if (validResults.length > 0) {
+      const newFeatures = validResults.flatMap(r => r.features);
+      const newGuNames = validResults.map(r => r.name);
+
+      setGeoData(prev => {
+        const merged = [...prev, ...newFeatures];
+        console.log(`✅ [3단계] 최종 병합 완료! 총 도로 수: ${merged.length}`);
+        
+        // 그래프 재생성
+        const newGraph = buildGraph({ features: merged });
+        setGraph(newGraph);
+        return merged;
+      });
+
+      setLoadedGus(prev => [...prev, ...newGuNames]);
+    } else {
+      console.warn("⚠️ [경고] 로딩을 시도했으나 유효한 데이터가 하나도 없습니다.");
+    }
+
+  }, [loadedGus]);
+
+  // 2. 앱 시작 시 & 지도가 멈출 때마다 데이터 체크
+  // (updateMapBounds 함수 안에서 호출해도 되고, useEffect로 center를 감시해도 됨)
+  useEffect(() => {
+    // 지도가 움직임이 멈추거나 초기화되면 주변 데이터 로딩
+    if (!isGpsLoading) {
+      loadNearbyData(mapCenter.lat, mapCenter.lng);
+    }
+  }, [mapCenter, isGpsLoading, loadNearbyData]);
 
   const onMapCreated = useCallback((map) => {
     setTimeout(() => { map.relayout(); map.setCenter(new window.kakao.maps.LatLng(mapCenter.lat, mapCenter.lng)); }, 100);
@@ -188,41 +269,81 @@ export default function App() {
     };
 
   const handleSearchTransit = async () => {
+    // 1. 입력값 검사 (도착지는 필수!)
+    if (!endPoint) return alert("도착지를 입력해주세요.");
+    if (!graph) return alert("지도 데이터를 분석 중입니다. 잠시만요!");
+
     setTransitData(null);
 
-    // 1. 예외 처리
-    if (!graph) return alert("지도 데이터를 분석 중입니다. 잠시만 기다려주세요.");
-    // 목적지(endPoint)가 텍스트면 좌표 변환이 필요하지만, 
-    // 현재 코드 구조상 서울역(126.9726, 37.5546)으로 테스트하므로 그대로 둡니다.
-    // (실제 사용시엔 searchPlaces[0] 등의 좌표를 넣어야 함)
-    
-    // 2. ODsay 대중교통 경로 요청 (내 위치 -> 서울역)
-    const result = await fetchTransitRoute(myPos.lng, myPos.lat, 126.9726, 37.5546);
-    
-    if (result) {
-      // 3. 도보 구간만 '안심 경로'로 교체
-      const enhancedPath = result.path[0].subPath.map((segment) => {
-        if (segment.trafficType === 3) { // 도보 구간(Walk)
-          const start = `${segment.startX},${segment.startY}`;
-          const end = `${segment.endX},${segment.endY}`;
-
-          // [핵심] 사용자가 선택한 모드에 따라 '가중치'만 다르게 설정
-          // safe: CCTV, 가로등, 사각지대 점수 반영
-          // fast: 모든 가중치 0 (그냥 거리만 보고 최단 경로)
-          const weights = routeType === 'safe' 
-            ? { cctv: userPrefs.cctv, blind: userPrefs.blind, light: 1 } 
-            : { cctv: 0, blind: 0, light: 0 };
-
-          // mapService의 findSafePath 실행
-          const safePath = findSafePath(start, end, graph, weights);
-          return { ...segment, safePath };
+    // 2. 주소(텍스트)를 좌표로 바꾸는 함수 (Promise 사용)
+    const getCoords = (keyword, type) => {
+      return new Promise((resolve, reject) => {
+        
+        // (1) '내 위치' 버튼을 눌렀거나, 빈칸이면 -> GPS 사용
+        // 출발지(type === 'start')가 빈칸이면 자동으로 내 위치로 간주
+        if (keyword === "📍 내 위치" || keyword === "내 위치" || (!keyword && type === 'start')) {
+          resolve({ lat: myPos.lat, lng: myPos.lng, name: "현재 위치" });
+          return;
         }
-        return segment; // 버스/지하철은 그대로
-      });
 
-      setTransitData({ ...result, enhancedPath });
-      alert(`${routeType === 'safe' ? '🛡️ 안심' : '⚡ 최단'} 경로 탐색 완료!`);
-      setIsDirectionMode(false); // 창 닫기
+        // (2) 그 외 입력값이 있으면 -> 카카오 장소 검색 API로 좌표 찾기
+        const ps = new window.kakao.maps.services.Places();
+        ps.keywordSearch(keyword, (data, status) => {
+          if (status === window.kakao.maps.services.Status.OK) {
+            console.log(`🔎 검색 성공 [${type}]: ${data[0].place_name}`);
+            resolve({
+              lat: parseFloat(data[0].y),
+              lng: parseFloat(data[0].x),
+              name: data[0].place_name
+            });
+          } else {
+            reject(`'${keyword}'을(를) 찾을 수 없습니다.`);
+          }
+        });
+      });
+    };
+
+    try {
+      // 3. 출발지 & 도착지 좌표 변환 (병렬 처리)
+      // startPoint 상태값을 그대로 넘깁니다. (입력한 대로 검색)
+      const startNode = await getCoords(startPoint, 'start'); 
+      const endNode = await getCoords(endPoint, 'end');
+
+      console.log(`🚀 경로 탐색 시작: ${startNode.name} -> ${endNode.name}`);
+
+      // 4. 도착지 중심으로 지도 이동 (도착지를 보여주는 게 일반적)
+      setMapCenter({ lat: endNode.lat, lng: endNode.lng });
+
+      // 5. ODsay API에 '변환된 좌표'를 넣어서 경로 요청
+      const result = await fetchTransitRoute(startNode.lng, startNode.lat, endNode.lng, endNode.lat);
+
+      if (result) {
+        // 6. 도보 구간만 '안심 경로'로 교체 (기존 로직 유지)
+        const enhancedPath = result.path[0].subPath.map((segment) => {
+          if (segment.trafficType === 3) { // 도보
+            const start = `${segment.startX},${segment.startY}`;
+            const end = `${segment.endX},${segment.endY}`;
+
+            const weights = routeType === 'safe' 
+              ? { cctv: userPrefs.cctv, blind: userPrefs.blind, light: 1 } 
+              : { cctv: 0, blind: 0, light: 0 };
+
+            const safePath = findSafePath(start, end, graph, weights);
+            return { ...segment, safePath };
+          }
+          return segment;
+        });
+
+        setTransitData({ ...result, enhancedPath });
+        alert(`[${startNode.name}] 에서 [${endNode.name}] 까지\n${routeType === 'safe' ? '🛡️ 안심' : '⚡ 최단'} 경로를 찾았습니다!`);
+        setIsDirectionMode(false); 
+      } else {
+        alert("대중교통 경로를 찾을 수 없습니다.");
+      }
+
+    } catch (error) {
+      console.error(error);
+      alert("장소를 찾을 수 없습니다. 검색어를 확인해주세요.");
     }
   };
 
@@ -271,6 +392,13 @@ export default function App() {
   });
 
   if (loading) return <div className="flex items-center justify-center h-screen bg-black text-white font-bold animate-pulse">⏳ 시스템 로딩 중...</div>;
+
+  if (error) return (
+    <div className="flex items-center justify-center h-screen bg-red-50 text-red-600 font-bold p-4 text-center">
+      ❌ 지도를 불러오지 못했습니다.<br/>
+      (API 키 설정이나 네트워크를 확인해주세요)
+    </div>
+  );
 
   return (
     <div className="w-full h-screen bg-gray-900 flex justify-center items-center p-4">

@@ -50,27 +50,72 @@ export const buildGraph = (geoData) => {
 };
 
 // =========================================================
-// 2. 길찾기 (여기서 가중치를 동적으로 적용!)
+// 2. 안심 경로 탐색 (좌표 매칭 기능 추가됨 ✨)
 // =========================================================
 export const findSafePath = (startStr, endStr, graph, weights) => {
   if (!graph) return [];
 
-  const nodes = Object.keys(graph);
-  if (nodes.length === 0) return [];
+  // 1. 입력받은 문자열 좌표("경도,위도")를 숫자로 변환
+  const [startLng, startLat] = startStr.split(',').map(Number);
+  const [endLng, endLat] = endStr.split(',').map(Number);
 
-  // *데모용: 실제로는 startStr(좌표)와 가장 가까운 노드를 찾아야 함
-  // 지금은 그래프 연결 테스트를 위해 임의의 노드 사용
-  const startNode = nodes[0]; 
-  const endNode = nodes[Math.floor(nodes.length / 2)]; 
+  // 2. 가장 가까운 노드 찾기 함수 (Nearest Neighbor Search)
+  const findNearestNode = (targetLat, targetLng) => {
+    let nearestNode = null;
+    let minDistance = Infinity;
 
-  // 비용 계산 함수 (핵심!)
+    // 그래프의 모든 노드를 뒤져서 가장 가까운 놈을 찾음
+    Object.keys(graph).forEach((u) => {
+      // 해당 노드(u)와 연결된 첫 번째 엣지를 가져와서 좌표 확인
+      const neighbors = graph[u];
+      const neighborKeys = Object.keys(neighbors);
+      if (neighborKeys.length === 0) return;
+
+      const edge = neighbors[neighborKeys[0]];
+      
+      // 엣지의 양 끝점 중 하나가 이 노드의 위치임
+      // (단순화를 위해 geometry의 첫 점과 끝 점을 비교)
+      const points = edge.geometry; // [[lng, lat], [lng, lat]...]
+      if (!points || points.length === 0) return;
+
+      // 시작점(points[0])과 끝점(points[last]) 중 현재 노드 u와 가까운 것 선택
+      // (정확히 하려면 노드별 좌표 매핑 테이블이 있어야 하지만, 여기선 엣지 정보로 추정)
+      // *Tip: GeoJSON 특성상 F_NODE는 geometry[0], T_NODE는 geometry[last]인 경우가 많음.
+      
+      // 여기서는 단순히 "엣지의 모든 점"과 비교해서 가장 가까운 거리 찾기 (오차 최소화)
+      points.forEach(pt => {
+        const [lng, lat] = pt;
+        // 피타고라스 거리 계산 (정확한 미터법은 아니지만 비교용으론 충분)
+        const dist = Math.sqrt(Math.pow(lat - targetLat, 2) + Math.pow(lng - targetLng, 2));
+        
+        if (dist < minDistance) {
+          minDistance = dist;
+          nearestNode = u;
+        }
+      });
+    });
+
+    return nearestNode;
+  };
+
+  // 3. 실제 출발/도착 노드 찾기
+  // (그래프가 너무 크면 여기서 약간 렉이 걸릴 수 있음 -> 나중에 최적화 가능)
+  const startNode = findNearestNode(startLat, startLng);
+  const endNode = findNearestNode(endLat, endLng);
+
+  if (!startNode || !endNode) {
+    console.warn("❌ 근처 도로를 찾을 수 없습니다.");
+    return [];
+  }
+
+  // 4. 비용(Cost) 계산 및 다익스트라 실행
   const getCost = (u, v) => {
     const edge = graph[u][v];
     if (!edge) return 999999;
 
     let cost = edge.len; 
     
-    // weights 값에 따라 안심/최단 경로가 결정됨
+    // 가중치 적용 (안심 vs 최단)
     cost -= (edge.cctv * weights.cctv * 5); 
     cost -= (edge.lamp * weights.light * 2); 
     cost += (edge.blind * weights.blind * 10); 
@@ -79,7 +124,6 @@ export const findSafePath = (startStr, endStr, graph, weights) => {
   };
 
   try {
-    // 라이브러리 사용을 위한 그래프 변환
     const costGraph = {};
     for (const u in graph) {
       costGraph[u] = {};
@@ -88,22 +132,26 @@ export const findSafePath = (startStr, endStr, graph, weights) => {
       }
     }
 
-    // 🚀 라이브러리로 최단 경로 찾기
+    // 라이브러리로 최단 경로 추출
     const pathNodes = dijkstra.find_path(costGraph, startNode, endNode);
     
-    // 좌표 변환
+    // 노드 -> 좌표 변환
     const pathCoords = [];
     for (let i = 0; i < pathNodes.length - 1; i++) {
       const u = pathNodes[i];
       const v = pathNodes[i+1];
       const edge = graph[u][v];
       if (edge && edge.geometry) {
+        // 엣지의 방향이 (u->v)인지 (v->u)인지 확인해서 좌표 순서 맞추기
+        // (단순화를 위해 그냥 geometry 그대로 넣음)
         edge.geometry.forEach(pt => pathCoords.push({ lat: pt[1], lng: pt[0] }));
       }
     }
     return pathCoords;
+
   } catch (e) {
-    console.error("경로 찾기 실패:", e);
+    console.error("길찾기 실패 (연결되지 않은 도로일 수 있음):", e);
+    // 실패 시 직선이라도 그어주기 위해 빈 배열 대신 null 반환 가능하지만, 일단 빈 배열
     return [];
   }
 };
