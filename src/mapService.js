@@ -2,7 +2,7 @@
 /* 1. 대중교통 경로 조회 */
 export const fetchTransitRoute = async (sx, sy, ex, ey) => {
   try {
-    const apiKey = "r6qH9uz8YJeOfZAozGRhSw"; // API Key
+    const apiKey = process.env.REACT_APP_ODSAY_API_KEY; // API Key
     const url = `https://api.odsay.com/v1/api/searchPubTransPathT?SX=${sx}&SY=${sy}&EX=${ex}&EY=${ey}&apiKey=${apiKey}`;
 
     const response = await fetch(url);
