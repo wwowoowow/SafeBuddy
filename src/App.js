@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Map, MapMarker, CustomOverlayMap, Polyline, useKakaoLoader } from "react-kakao-maps-sdk";
 import useSupercluster from "use-supercluster";
-import { Search, Shield, Map as MapIcon, Layers, ArrowRightLeft, X, Navigation, CheckCircle2, AlertCircle, Phone, MapPin, ThumbsUp, ThumbsDown, XCircle, Crosshair, FileText, Menu, Camera, ChevronRight, User, Bell, Settings, LogOut, ShieldCheck, PhoneCall, ExternalLink, Siren, Star, Clock, Award, Heart, MessageSquare, Info, Zap } from "lucide-react";
-import { fetchTransitRoute, parseOdsayPath, findSafePath, buildGraph } from "./mapService";
+import { Search, Shield, Map as MapIcon, Layers, ArrowRightLeft, X, Navigation, AlertCircle, MapPin, ThumbsUp, ThumbsDown, XCircle, Crosshair, FileText, Menu, Camera, ChevronRight, User, Bell, Settings, LogOut, ShieldCheck, PhoneCall, ExternalLink, Star, Clock, Heart, Zap } from "lucide-react";
+import { policeData, defaultUserPrefs } from "./data/mockData";
+import { fetchTransitRoute, buildGraph, findSafePath } from "./api/mapService";
+import { useComplaints } from "./hooks/useComplaints";
 
 export default function App() {
-  const [loading, error] = useKakaoLoader({
+  const [loading, error] = useKakaoLoader({ 
     appkey: process.env.REACT_APP_KAKAO_API_KEY,
     libraries: ["services", "clusterer"],
   });
@@ -24,11 +26,8 @@ export default function App() {
   const [transitData, setTransitData] = useState(null);
   const [geoData, setGeoData] = useState([]);
 
-  // 사용자의 안전 선호도 (1: 낮음 ~ 5: 높음)
-  const [userPrefs, setUserPrefs] = useState({
-    cctv: 3,  // CCTV/감시 선호도
-    blind: 3  // 사각지대 회피 선호도
-  });
+  // 사용자의 안전 선호도 
+  const [userPrefs, setUserPrefs] = useState(defaultUserPrefs);
   
   const [keyword, setKeyword] = useState(""); 
   const [searchPlaces, setSearchPlaces] = useState([]);
@@ -41,23 +40,17 @@ export default function App() {
   const [zoom, setZoom] = useState(20 - 3); 
   const [bounds, setBounds] = useState(null);
 
-  const [complaints, setComplaints] = useState([
-    { id: 1, type: 'complaint', lat: 37.4981, lng: 127.0277, title: "가로등 고장", address: "서울 강남구 역삼동 825-1", date: "2023.10.01", reason: "저녁에 너무 어두워서 발을 헛디딜 뻔했습니다.", likes: 12, dislikes: 0, rating: 3 },
-    { id: 2, type: 'complaint', lat: 37.4982, lng: 127.0278, address: "서울 강남구 테헤란로 110", date: "2023.10.05", reason: "비 오면 물웅덩이가 생겨서 걷기 불편해요.", likes: 5, dislikes: 1, rating: 2 },
-    { id: 3, type: 'complaint', lat: 37.4983, lng: 127.0279, address: "서울 강남구 역삼동 823", date: "2023.10.11", reason: "전봇대 아래 냄새가 너무 심합니다.", likes: 8, dislikes: 2, rating: 1 },
-  ]);
-  const [myComplaints, setMyComplaints] = useState([]); 
+  const { 
+    complaints, myComplaints, userReactions, 
+    addComplaint, deleteComplaint, handleReaction 
+  } = useComplaints();
+  
   const [compTitle, setCompTitle] = useState("");
   const [compContent, setCompContent] = useState("");
   const [compRating, setCompRating] = useState(5);
   const [compLocation, setCompLocation] = useState({ lat: myPos.lat, lng: myPos.lng, address: "📍 현재 위치" });
   const [isPickingLocation, setIsPickingLocation] = useState(false);
-  const [userReactions, setUserReactions] = useState({});
 
-  const policeData = [
-    { type: 'police', lat: 37.4999, lng: 127.0280, title: "역삼지구대", address: "서울 강남구 역삼동 827-24", hours: "24시간 운영", reason: "가장 가까운 치안 거점입니다." },
-    { type: 'guardian', lat: 37.4970, lng: 127.0260, title: "안전지킴이집 1", address: "서울 강남구 역삼동 편의점", hours: "21:00 ~ 02:00", reason: "여성/아동 안심 귀가 보호소입니다." },
-  ];
 
   const roadSafetySegments = [
     { id: "main_1", level: 1, safety: "high", path: [{ lat: 37.4980, lng: 127.0270 }, { lat: 37.4985, lng: 127.0280 }] },   // 큰 도로 (항상 보임)
@@ -145,20 +138,16 @@ export default function App() {
     fetch('/risk_links_v1.geojson')
       .then(res => res.json())
       .then(data => {
-        setGeoData(data.features);
-        console.log("데이터 로드 완료:", data.features.length, "개의 도로");
+        setGeoData(data.features || []);
+        
+        console.log("📡 데이터 로딩 완료. 그래프 생성 중...");
+        // mapService.js의 buildGraph 함수 호출 (규칙 기반으로 점수 자동 계산됨)
+        const builtGraph = buildGraph(data); 
+        setGraph(builtGraph);
+        console.log("✅ 그래프 생성 완료! (노드 개수: " + Object.keys(builtGraph).length + ")");
       })
-      .catch(err => console.error("데이터 로딩 실패:", err));
+      .catch(err => console.error("데이터 실패:", err));
   }, []);
-
-  // GeoJSON 데이터(geoData)가 로드되면 자동으로 그래프 빌드
-  useEffect(() => {
-    if (geoData.length > 0) {
-      const builtGraph = buildGraph(geoData);
-      setGraph(builtGraph);
-      console.log("✅ 길찾기용 네트워크 그래프 생성 완료");
-    }
-  }, [geoData]);
 
   const onMapCreated = useCallback((map) => {
     setTimeout(() => { map.relayout(); map.setCenter(new window.kakao.maps.LatLng(mapCenter.lat, mapCenter.lng)); }, 100);
@@ -200,44 +189,40 @@ export default function App() {
 
   const handleSearchTransit = async () => {
     setTransitData(null);
-    // 1. 데이터 준비 확인
-    if (!graph || geoData.length === 0) {
-      return alert("도로 데이터 그래프를 생성 중입니다. 잠시 후 다시 시도해주세요.");
-    }
 
-    // 2. 대중교통 경로 호출 (ODsay)
-    // 현재 위치(myPos)에서 목적지(현재는 서울역 좌표 고정)까지의 경로를 가져옵니다.
+    // 1. 예외 처리
+    if (!graph) return alert("지도 데이터를 분석 중입니다. 잠시만 기다려주세요.");
+    // 목적지(endPoint)가 텍스트면 좌표 변환이 필요하지만, 
+    // 현재 코드 구조상 서울역(126.9726, 37.5546)으로 테스트하므로 그대로 둡니다.
+    // (실제 사용시엔 searchPlaces[0] 등의 좌표를 넣어야 함)
+    
+    // 2. ODsay 대중교통 경로 요청 (내 위치 -> 서울역)
     const result = await fetchTransitRoute(myPos.lng, myPos.lat, 126.9726, 37.5546);
     
     if (result) {
-      const weights = getDynamicWeights();
-      
-      // 3. ODsay 결과의 각 구간(subPath)을 순회하며 '도보' 구간만 우리 데이터로 교체
-      const enhancedPath = await Promise.all(result.path[0].subPath.map(async (segment) => {
-        if (segment.trafficType === 3) { // 도보(Walk) 구간일 때
+      // 3. 도보 구간만 '안심 경로'로 교체
+      const enhancedPath = result.path[0].subPath.map((segment) => {
+        if (segment.trafficType === 3) { // 도보 구간(Walk)
           const start = `${segment.startX},${segment.startY}`;
           const end = `${segment.endX},${segment.endY}`;
 
-          let finalWalkPath;
-          
-          // ✨ 사용자가 선택한 routeType(안심/최단)에 따라 가중치 분기 처리
-          if (routeType === 'safe') {
-            // 가로등, CCTV, 시간대별 밝기 가중치를 모두 적용하여 '가장 안전한 길' 탐색
-            finalWalkPath = findSafePath(start, end, graph, weights);
-          } else {
-            // '최단 경로'일 때는 모든 안전 가중치를 0으로 주어 '가장 빠른 직선 위주 길' 탐색
-            finalWalkPath = findSafePath(start, end, graph, { light: 0, cctv: 0, blind: 0 });
-          }
+          // [핵심] 사용자가 선택한 모드에 따라 '가중치'만 다르게 설정
+          // safe: CCTV, 가로등, 사각지대 점수 반영
+          // fast: 모든 가중치 0 (그냥 거리만 보고 최단 경로)
+          const weights = routeType === 'safe' 
+            ? { cctv: userPrefs.cctv, blind: userPrefs.blind, light: 1 } 
+            : { cctv: 0, blind: 0, light: 0 };
 
-          return { ...segment, safePath: finalWalkPath };
+          // mapService의 findSafePath 실행
+          const safePath = findSafePath(start, end, graph, weights);
+          return { ...segment, safePath };
         }
-        return segment; // 버스/지하철 구간은 그대로 유지
-      }));
+        return segment; // 버스/지하철은 그대로
+      });
 
-      // 4. 상태 업데이트 및 알림
       setTransitData({ ...result, enhancedPath });
-      alert(`${routeType === 'safe' ? '🛡️ 안심' : '⚡ 최단'} 경로 탐색이 완료되었습니다.`);
-      setIsDirectionMode(false); // 검색 창 닫기
+      alert(`${routeType === 'safe' ? '🛡️ 안심' : '⚡ 최단'} 경로 탐색 완료!`);
+      setIsDirectionMode(false); // 창 닫기
     }
   };
 
@@ -247,8 +232,7 @@ export default function App() {
   // 민원 삭제 함수 추가
   const handleDeleteComplaint = (id) => {
     if (window.confirm("이 민원을 삭제하시겠습니까?")) {
-      setComplaints(prev => prev.filter(c => c.id !== id));
-      setMyComplaints(prev => prev.filter(c => c.id !== id));
+      deleteComplaint(id);
       alert("삭제되었습니다.");
     }
   };  
@@ -268,8 +252,7 @@ export default function App() {
   const handleSubmitComplaint = () => {
     if (!compTitle || !compContent) { alert("내용을 입력해주세요."); return; }
     const newComp = { id: Date.now(), type: 'complaint', lat: compLocation.lat, lng: compLocation.lng, title: compTitle, address: compLocation.address, date: new Date().toLocaleDateString(), reason: compContent, rating: compRating, likes: 0, dislikes: 0, image: compImage };
-    setComplaints(prev => [...prev, newComp]);
-    setMyComplaints(prev => [...prev, newComp]);
+    addComplaint(newComp);
     setCompTitle(""); 
     setCompContent("");
     setCompRating(5);
@@ -278,43 +261,7 @@ export default function App() {
     alert("접수되었습니다!"); setActiveTab("home"); setMapCenter(newComp);
   };
 
-  const handleReaction = (id, type) => {
-    const currentReaction = userReactions[id]; // 현재 이 민원에 대한 유저의 반응 ('likes' or 'dislikes' or null)
 
-    setComplaints((prev) =>
-      prev.map((c) => {
-        if (c.id === id) {
-          let newLikes = c.likes;
-          let newDislikes = c.dislikes;
-
-          // 1. 기존에 했던 반응이 있다면 먼저 제거 (숫자 감소)
-          if (currentReaction === 'likes') newLikes--;
-          if (currentReaction === 'dislikes') newDislikes--;
-
-          // 2. 클릭한 반응이 기존 반응과 다를 때만 새로 적용 (숫자 증가)
-          // (즉, 같은 버튼을 또 누르면 '취소'만 되고 아무것도 적용 안 됨)
-          if (currentReaction !== type) {
-            if (type === 'likes') newLikes++;
-            if (type === 'dislikes') newDislikes++;
-          }
-
-          return { ...c, likes: newLikes, dislikes: newDislikes };
-        }
-        return c;
-      })
-    );
-
-    // 내 반응 상태(userReactions) 업데이트
-    setUserReactions((prev) => {
-      const next = { ...prev };
-      if (currentReaction === type) {
-        delete next[id]; // 같은 거 누르면 취소
-      } else {
-        next[id] = type; // 새로운 반응으로 변경
-      }
-      return next;
-    });
-  };
 
   console.log({
     dataLength: geoData.length,      // 파일이 잘 불러와졌는지 (0보다 커야 함)
